@@ -6,7 +6,7 @@
 <style>
   body { font-family: monospace; background: #111; color: #0f0; padding: 20px; }
   #status { font-size: 1.2em; }
-  #progress { margin-top: 10px; color: #888; }
+  #progress { margin-top: 10px; color: #888; font-size: 0.9em; }
 </style>
 </head>
 <body>
@@ -15,90 +15,134 @@
 <script>
 (async function() {
   const params = new URLSearchParams(location.search);
-  const text = params.get('text') || '';
-  const lang = params.get('lang') || 'fr';
-  const status = document.getElementById('status');
+  const text   = params.get('text') || '';
+  const lang   = params.get('lang') || 'fr';
+  const voice  = params.get('voice') || '';  // e.g. "Henri", "Denise", "Eloise", "google"
+
+  const status   = document.getElementById('status');
   const progress = document.getElementById('progress');
 
   window.ttsComplete = false;
-  window.ttsError = null;
+  window.ttsError    = null;
 
   if (!text) {
-    status.textContent = 'No text provided. Usage: ?text=Hello+world&lang=fr';
+    status.textContent = 'Usage: ?text=Bonjour&lang=fr&voice=Denise';
     return;
   }
 
-  function log(msg) {
-    progress.innerHTML += msg + '<br>';
-  }
+  function log(msg) { progress.innerHTML += msg + '<br>'; }
 
-  // Split text into chunks of max 180 chars on sentence boundaries
   function splitText(t, maxLen) {
     maxLen = maxLen || 180;
     const chunks = [];
-    // Split on sentence boundaries first
-    const parts = t.split(/(?<=[.!?])\s+/);
-    let current = '';
-    for (const part of parts) {
-      if (part.length > maxLen) {
-        // Split long part on commas/spaces
-        if (current) { chunks.push(current.trim()); current = ''; }
-        for (let i = 0; i < part.length; i += maxLen) {
-          chunks.push(part.slice(i, i + maxLen).trim());
-        }
-      } else if ((current + ' ' + part).trim().length > maxLen) {
-        if (current) chunks.push(current.trim());
-        current = part;
+    const parts  = t.split(/(?<=[.!?])\s+/);
+    let cur = '';
+    for (const p of parts) {
+      if (p.length > maxLen) {
+        if (cur) { chunks.push(cur.trim()); cur = ''; }
+        for (let i = 0; i < p.length; i += maxLen)
+          chunks.push(p.slice(i, i + maxLen).trim());
+      } else if ((cur + ' ' + p).trim().length > maxLen) {
+        if (cur) chunks.push(cur.trim());
+        cur = p;
       } else {
-        current = (current + ' ' + part).trim();
+        cur = (cur + ' ' + p).trim();
       }
     }
-    if (current) chunks.push(current.trim());
+    if (cur) chunks.push(cur.trim());
     return chunks.filter(c => c.length > 0);
   }
 
-  async function fetchChunkWithRetry(chunk, lang, retries) {
-    retries = retries || 3;
-    const encoded = encodeURIComponent(chunk);
-    const ttsUrl = 'https://translate.google.com/translate_tts?ie=UTF-8&q=' + encoded + '&tl=' + lang + '&client=tw-ob';
-    const proxies = [
-      'https://corsproxy.io/?' + encodeURIComponent(ttsUrl),
-      'https://api.allorigins.win/raw?url=' + encodeURIComponent(ttsUrl),
-      ttsUrl  // Direct (may work if CORS allows audio)
-    ];
+  // ── Edge TTS via unofficial WebSocket ────────────────────────────────────
+  // Maps short name → full SSML voice name
+  const EDGE_VOICES = {
+    'henri':    'fr-FR-HenriNeural',
+    'denise':   'fr-FR-DeniseNeural',
+    'eloise':   'fr-FR-EloiseNeural',
+    'remy':     'fr-FR-RemyMultilingualNeural',
+    'vivienne': 'fr-FR-VivienneMultilingualNeural',
+    'guy':      'en-US-GuyNeural',
+    'aria':     'en-US-AriaNeural',
+  };
 
-    for (let p = 0; p < proxies.length; p++) {
-      for (let r = 0; r < retries; r++) {
-        try {
-          const resp = await fetch(proxies[p], { headers: { 'User-Agent': 'Mozilla/5.0' } });
-          if (resp.ok) {
-            const buf = await resp.arrayBuffer();
-            if (buf.byteLength > 100) return buf;
-          }
-        } catch(e) {
-          log('Proxy ' + p + ' attempt ' + (r+1) + ' failed: ' + e.message);
-        }
-        await new Promise(res => setTimeout(res, 500));
-      }
-    }
-    throw new Error('All proxies failed for chunk: ' + chunk.slice(0, 30));
+  async function fetchEdgeTTS(chunk, voiceName) {
+    // Use corsproxy to hit the edge-tts API endpoint
+    const ssmlVoice = EDGE_VOICES[voiceName.toLowerCase()] || voiceName;
+    const ssml = `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='fr-FR'><voice name='${ssmlVoice}'>${chunk.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}</voice></speak>`;
+
+    // edge-tts REST endpoint (via SpeechSynthesis proxy)
+    const url = `https://edge.microsoft.com/translate/speaker/speak?text=${encodeURIComponent(chunk)}&language=fr-FR&voiceName=${ssmlVoice}`;
+    // Use allorigins as CORS proxy
+    const proxy = `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`;
+    const resp = await fetch(proxy);
+    if (!resp.ok) throw new Error('Edge TTS proxy failed: ' + resp.status);
+    const buf = await resp.arrayBuffer();
+    if (buf.byteLength < 100) throw new Error('Empty response from Edge TTS');
+    return buf;
   }
 
+  // ── Google Translate TTS ──────────────────────────────────────────────────
+  async function fetchGoogleTTS(chunk, lang) {
+    const encoded = encodeURIComponent(chunk);
+    const ttsUrl  = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encoded}&tl=${lang}&client=tw-ob`;
+    const proxies = [
+      `https://corsproxy.io/?${encodeURIComponent(ttsUrl)}`,
+      `https://api.allorigins.win/raw?url=${encodeURIComponent(ttsUrl)}`,
+    ];
+    for (const p of proxies) {
+      try {
+        const resp = await fetch(p);
+        if (resp.ok) {
+          const buf = await resp.arrayBuffer();
+          if (buf.byteLength > 100) return buf;
+        }
+      } catch(e) { log('Proxy failed: ' + e.message); }
+      await new Promise(r => setTimeout(r, 400));
+    }
+    throw new Error('All Google TTS proxies failed');
+  }
+
+  // ── Web Speech API fallback (browser native voices) ──────────────────────
+  function speechSynthesisToBlob(text, lang) {
+    return new Promise((resolve, reject) => {
+      const utter  = new SpeechSynthesisUtterance(text);
+      utter.lang   = lang + '-FR';
+      utter.rate   = 0.95;
+      const voices = speechSynthesis.getVoices().filter(v => v.lang.startsWith(lang));
+      if (voices.length) utter.voice = voices[0];
+      utter.onend  = () => resolve(null); // can't capture audio blob directly
+      utter.onerror = reject;
+      speechSynthesis.speak(utter);
+    });
+  }
+
+  // ── Main ─────────────────────────────────────────────────────────────────
   try {
-    status.textContent = 'Generating TTS...';
-    const chunks = splitText(text);
-    log('Text: ' + text.length + ' chars, ' + chunks.length + ' chunk(s)');
+    const chunks  = splitText(text);
+    const useEdge = voice && voice.toLowerCase() !== 'google';
+    const method  = useEdge ? `Edge TTS (${voice})` : `Google TTS (${lang})`;
+    status.textContent = `Generating with ${method}...`;
+    log(`Text: ${text.length} chars | ${chunks.length} chunk(s) | Voice: ${voice || 'google'}`);
 
     const buffers = [];
     for (let i = 0; i < chunks.length; i++) {
-      log('Fetching chunk ' + (i+1) + '/' + chunks.length + '...');
-      const buf = await fetchChunkWithRetry(chunks[i], lang);
+      log(`Chunk ${i+1}/${chunks.length}...`);
+      let buf;
+      if (useEdge) {
+        try {
+          buf = await fetchEdgeTTS(chunks[i], voice);
+        } catch(e) {
+          log(`Edge TTS failed (${e.message}), falling back to Google`);
+          buf = await fetchGoogleTTS(chunks[i], lang);
+        }
+      } else {
+        buf = await fetchGoogleTTS(chunks[i], lang);
+      }
       buffers.push(buf);
-      log('Chunk ' + (i+1) + ' OK (' + buf.byteLength + ' bytes)');
+      log(`Chunk ${i+1} OK (${buf.byteLength} bytes)`);
     }
 
-    // Concatenate all MP3 buffers
-    const totalLen = buffers.reduce(function(a, b) { return a + b.byteLength; }, 0);
+    const totalLen = buffers.reduce((a, b) => a + b.byteLength, 0);
     const combined = new Uint8Array(totalLen);
     let offset = 0;
     for (const buf of buffers) {
@@ -107,21 +151,21 @@
     }
 
     const blob = new Blob([combined], { type: 'audio/mpeg' });
-    const url = URL.createObjectURL(blob);
-
-    const a = document.createElement('a');
-    a.href = url;
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
     a.download = 'tts-output.mp3';
     document.body.appendChild(a);
     a.click();
 
-    status.textContent = 'Done! ' + totalLen + ' bytes downloaded.';
-    window.ttsComplete = true;
-    window.ttsByteSize = totalLen;
+    status.textContent = `Done! ${method} — ${totalLen} bytes downloaded.`;
+    window.ttsComplete  = true;
+    window.ttsByteSize  = totalLen;
+    window.ttsMethod    = method;
 
   } catch(e) {
-    status.textContent = 'Error: ' + e.message;
-    window.ttsError = e.message;
+    status.textContent  = 'Error: ' + e.message;
+    window.ttsError     = e.message;
   }
 })();
 </script>
