@@ -1,0 +1,14 @@
+<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><title>TTS</title>
+<style>body{background:#111;color:#0f0;font-family:monospace;padding:40px}button{background:#0f0;color:#111;border:none;padding:14px 28px;font-size:18px;cursor:pointer;border-radius:6px;margin:8px}#s{margin-top:16px}</style>
+</head><body>
+<h2>TTS Tier List IA 2026</h2>
+<button onclick="go()">Generer</button>
+<button id="d" onclick="dl()" style="display:none">Telecharger MP3</button>
+<div id="s">Pret.</div>
+<script>
+const T=["Bienvenue sur L IA du Jour.","Aujourd hui, on classe les meilleurs modeles d IA, et je vais etre direct.","Tier S, les intouchables.","Gemini 2.5 Pro : raisonnement long, contexte d un million de tokens, gratuit. C est le roi du moment.","DeepSeek V3, 685 milliards de parametres, gratuit via NVIDIA, au niveau des meilleurs.","Ces deux la sont dans une categorie a part.","Tier A, les tres solides.","Mistral Large 675 milliards, fiable, rapide, gratuit.","Claude Sonnet 4.6 pour l ecriture et le code, excellent mais payant.","Qwen3 Coder 480 milliards, imbattable pour le developpement.","Tier B, bons mais limites.","GPT-4o reste competent mais OpenAI se fait distancer.","Llama 3.3 soixante dix milliards, puissant en local, mais limites sur le raisonnement profond.","Tier C, a eviter en 2026. Tout ce qui etait au top en 2024 et n a pas evolue.","La conclusion : en 2026, les meilleurs modeles sont gratuits. Si tu paies sans raison, tu te fais avoir.","Abonne toi pour suivre l evolution chaque jour."];
+let b=[];
+async function fc(t){const r=await fetch("https://translate.google.com/translate_tts?ie=UTF-8&tl=fr&client=tw-ob&q="+encodeURIComponent(t));if(!r.ok)throw r.status;return r.arrayBuffer();}
+async function go(){document.querySelector("button").disabled=1;b=[];const s=document.getElementById("s");for(let i=0;i<T.length;i++){s.textContent="Chunk "+(i+1)+"/"+T.length;let ok=0;for(let r=0;r<3&&!ok;r++){try{b.push(await fc(T[i]));ok=1;}catch(e){await new Promise(x=>setTimeout(x,1500));}}if(!ok){s.textContent="Echec "+i;return;}await new Promise(x=>setTimeout(x,350));}window._b=new Blob(b,{type:"audio/mpeg"});s.textContent="OK "+Math.round(window._b.size/1024)+" KB";document.getElementById("d").style.display="inline";document.querySelector("button").disabled=0;}
+function dl(){const a=document.createElement("a");a.href=URL.createObjectURL(window._b);a.download="tierlist-ia-2026.mp3";document.body.appendChild(a);a.click();document.body.removeChild(a);}
+</script></body></html>
